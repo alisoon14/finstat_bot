@@ -1,0 +1,11 @@
+__pycache__/
+count.py
+keyboard.py
+patch.py
+patch2.py
+settings.py
+start_func.py
+stat.py
+text.py
+.vscode/
+env/
