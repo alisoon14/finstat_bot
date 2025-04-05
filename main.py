@@ -1,9 +1,9 @@
 import telebot
+from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
 import time
 import traceback
 import signal
 import sys
-from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
 import settings
 
 bot = telebot.TeleBot(settings.API_KEY)
@@ -28,6 +28,17 @@ INCOME_CATEGORIES = [
     "📥 Прочие доходы"
 ]
 
+def get_or_create_user(user_id):
+    """Создает запись пользователя, если ее нет"""
+    if user_id not in user_data:
+        user_data[user_id] = {
+            "incomes": [],
+            "expenses": [],
+            "temp_income_category": None,
+            "temp_expense_category": None
+        }
+    return user_data[user_id]
+
 def create_main_keyboard():
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
     keyboard.row("Добавить доход", "Добавить расход")
@@ -47,10 +58,7 @@ def create_income_categories_keyboard():
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
-    user_data[user_id] = {
-        "incomes": [],  # Формат: {"amount": 100, "category": "Зарплата", "date": "2023-01-01"}
-        "expenses": []  # Аналогично
-    }
+    user = get_or_create_user(user_id) 
     
     bot.send_message(
         user_id,
@@ -59,40 +67,9 @@ def start(message):
         parse_mode="Markdown"
     )
 
-@bot.message_handler(func=lambda message: True)
-def handle_message(message):
-    user_id = message.from_user.id
-    text = message.text
-
-    if text == "Добавить доход":
-        msg = bot.send_message(
-            user_id, 
-            "Выберите категорию дохода:", 
-            reply_markup=create_income_categories_keyboard()
-        )
-        bot.register_next_step_handler(msg, process_income_category_step)
-    
-    elif text == "Добавить расход":
-        msg = bot.send_message(
-            user_id, 
-            "Выберите категорию расхода:", 
-            reply_markup=create_expense_categories_keyboard()
-        )
-        bot.register_next_step_handler(msg, process_expense_category_step)
-    
-    elif text == "Статистика":
-        show_statistics(user_id)
-    
-    elif text in EXPENSE_CATEGORIES or text in INCOME_CATEGORIES:
-        # Если пользователь случайно нажал на категорию без контекста
-        bot.send_message(
-            user_id,
-            "Пожалуйста, сначала выберите 'Добавить доход' или 'Добавить расход'",
-            reply_markup=create_main_keyboard()
-        )
-
 def process_income_category_step(message):
     user_id = message.from_user.id
+    user = get_or_create_user(user_id)
     category = message.text
     
     if category not in INCOME_CATEGORIES:
@@ -104,7 +81,7 @@ def process_income_category_step(message):
         bot.register_next_step_handler(message, process_income_category_step)
         return
     
-    user_data[user_id]["temp_income_category"] = category
+    user["temp_income_category"] = category
     msg = bot.send_message(
         user_id,
         f"Введите сумму дохода ({category}):",
@@ -116,15 +93,13 @@ def process_income_amount_step(message):
     try:
         amount = float(message.text)
         user_id = message.from_user.id
+        user = get_or_create_user(user_id)
         
-        if user_id not in user_data:
-            user_data[user_id] = {"incomes": [], "expenses": []}
-            
-        category = user_data[user_id].get("temp_income_category", "Прочие доходы")
-        user_data[user_id]["incomes"].append({
+        category = user.get("temp_income_category", "Прочие доходы")
+        user["incomes"].append({
             "amount": amount,
             "category": category.replace("📥 ", "").replace("💰 ", "").strip(),
-            "date": message.date  # Можно добавить обработку даты
+            "date": message.date
         })
         
         bot.send_message(
@@ -133,8 +108,8 @@ def process_income_amount_step(message):
             reply_markup=create_main_keyboard()
         )
         
-        if "temp_income_category" in user_data[user_id]:
-            del user_data[user_id]["temp_income_category"]
+        if "temp_income_category" in user:
+            del user["temp_income_category"]
             
     except ValueError:
         msg = bot.send_message(user_id, "❌ Ошибка! Введите число.")
@@ -142,6 +117,7 @@ def process_income_amount_step(message):
 
 def process_expense_category_step(message):
     user_id = message.from_user.id
+    user = get_or_create_user(user_id)
     category = message.text
     
     if category not in EXPENSE_CATEGORIES:
@@ -153,7 +129,7 @@ def process_expense_category_step(message):
         bot.register_next_step_handler(message, process_expense_category_step)
         return
     
-    user_data[user_id]["temp_expense_category"] = category
+    user["temp_expense_category"] = category
     msg = bot.send_message(
         user_id,
         f"Введите сумму расхода ({category}):",
@@ -165,15 +141,13 @@ def process_expense_amount_step(message):
     try:
         amount = float(message.text)
         user_id = message.from_user.id
+        user = get_or_create_user(user_id)  # Гарантированно получаем пользователя
         
-        if user_id not in user_data:
-            user_data[user_id] = {"incomes": [], "expenses": []}
-            
-        category = user_data[user_id].get("temp_expense_category", "Прочие расходы")
-        user_data[user_id]["expenses"].append({
+        category = user.get("temp_expense_category", "Прочие расходы")
+        user["expenses"].append({
             "amount": amount,
             "category": category.replace("📦 ", "").replace("🍏 ", "").strip(),
-            "date": message.date  # Можно добавить обработку даты
+            "date": message.date
         })
         
         bot.send_message(
@@ -182,20 +156,18 @@ def process_expense_amount_step(message):
             reply_markup=create_main_keyboard()
         )
         
-        if "temp_expense_category" in user_data[user_id]:
-            del user_data[user_id]["temp_expense_category"]
+        if "temp_expense_category" in user:
+            del user["temp_expense_category"]
             
     except ValueError:
         msg = bot.send_message(user_id, "❌ Ошибка! Введите число.")
         bot.register_next_step_handler(msg, process_expense_amount_step)
 
 def show_statistics(user_id):
-    if user_id not in user_data:
-        bot.send_message(user_id, "Сначала нажмите /start")
-        return
-
-    incomes = user_data[user_id]["incomes"]
-    expenses = user_data[user_id]["expenses"]
+    user = get_or_create_user(user_id)
+    
+    incomes = user["incomes"]
+    expenses = user["expenses"]
     
     total_income = sum(item["amount"] for item in incomes)
     total_expense = sum(item["amount"] for item in expenses)
@@ -237,6 +209,37 @@ def show_statistics(user_id):
         parse_mode="Markdown", 
         reply_markup=create_main_keyboard()
     )
+
+@bot.message_handler(func=lambda message: True)
+def handle_message(message):
+    user_id = message.from_user.id
+    text = message.text
+
+    if text == "Добавить доход":
+        msg = bot.send_message(
+            user_id, 
+            "Выберите категорию дохода:", 
+            reply_markup=create_income_categories_keyboard()
+        )
+        bot.register_next_step_handler(msg, process_income_category_step)
+    
+    elif text == "Добавить расход":
+        msg = bot.send_message(
+            user_id, 
+            "Выберите категорию расхода:", 
+            reply_markup=create_expense_categories_keyboard()
+        )
+        bot.register_next_step_handler(msg, process_expense_category_step)
+    
+    elif text == "Статистика":
+        show_statistics(user_id)
+    
+    elif text in EXPENSE_CATEGORIES or text in INCOME_CATEGORIES:
+        bot.send_message(
+            user_id,
+            "Пожалуйста, сначала выберите 'Добавить доход' или 'Добавить расход'",
+            reply_markup=create_main_keyboard()
+        )
 
 def signal_handler(sig, frame):
     print("Бот остановлен")
