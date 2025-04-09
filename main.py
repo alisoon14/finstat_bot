@@ -1,5 +1,5 @@
 import telebot
-from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telebot.types import ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 import time
 import traceback
 import signal
@@ -7,7 +7,7 @@ import sys
 import settings
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 bot = telebot.TeleBot(settings.API_KEY)
 
@@ -83,20 +83,40 @@ def add_expense(user_id, amount, category):
     })
     update_user_data(user_id, user)
 
-def get_statistics(user_id):
+def get_period_statistics(user_id, period='all'):
     user = get_or_create_user(user_id)
+    now = datetime.now()
     
-    total_income = sum(item["amount"] for item in user["incomes"])
-    total_expense = sum(item["amount"] for item in user["expenses"])
+    def filter_by_date(items, start_date):
+        return [item for item in items if datetime.fromisoformat(item["date"]) >= start_date]
+    
+    if period == 'week':
+        start_date = now - timedelta(days=7)
+        incomes = filter_by_date(user["incomes"], start_date)
+        expenses = filter_by_date(user["expenses"], start_date)
+    elif period == 'month':
+        start_date = now - timedelta(days=30)
+        incomes = filter_by_date(user["incomes"], start_date)
+        expenses = filter_by_date(user["expenses"], start_date)
+    elif period == 'year':
+        start_date = now - timedelta(days=365)
+        incomes = filter_by_date(user["incomes"], start_date)
+        expenses = filter_by_date(user["expenses"], start_date)
+    else:  # all time
+        incomes = user["incomes"]
+        expenses = user["expenses"]
+    
+    total_income = sum(item["amount"] for item in incomes)
+    total_expense = sum(item["amount"] for item in expenses)
     balance = total_income - total_expense
 
     income_stats = {}
-    for item in user["incomes"]:
+    for item in incomes:
         cat = item["category"]
         income_stats[cat] = income_stats.get(cat, 0) + item["amount"]
 
     expense_stats = {}
-    for item in user["expenses"]:
+    for item in expenses:
         cat = item["category"]
         expense_stats[cat] = expense_stats.get(cat, 0) + item["amount"]
 
@@ -106,9 +126,72 @@ def get_statistics(user_id):
         'balance': balance,
         'income_stats': income_stats,
         'expense_stats': expense_stats,
-        'income_count': len(user["incomes"]),
-        'expense_count': len(user["expenses"])
+        'income_count': len(incomes),
+        'expense_count': len(expenses),
+        'period': period
     }
+
+def create_period_keyboard():
+    keyboard = InlineKeyboardMarkup()
+    keyboard.row(
+        InlineKeyboardButton("Неделя", callback_data='stat_week'),
+        InlineKeyboardButton("Месяц", callback_data='stat_month')
+    )
+    keyboard.row(
+        InlineKeyboardButton("Год", callback_data='stat_year'),
+        InlineKeyboardButton("Все время", callback_data='stat_all')
+    )
+    return keyboard
+
+def show_statistics_period(user_id):
+    bot.send_message(
+        user_id,
+        "📊 Выберите период для статистики:",
+        reply_markup=create_period_keyboard()
+    )
+
+def format_statistics_message(stats):
+    period_name = {
+        'week': 'неделю',
+        'month': 'месяц',
+        'year': 'год',
+        'all': 'все время'
+    }.get(stats['period'], 'период')
+    
+    expense_stats = "\n".join(
+        f"• {cat}: -{amount:.2f}" 
+        for cat, amount in stats['expense_stats'].items()
+    )
+
+    income_stats = "\n".join(
+        f"• {cat}: +{amount:.2f}" 
+        for cat, amount in stats['income_stats'].items()
+    )
+
+    return (
+        f"📊 *Статистика за {period_name}*\n\n"
+        f"*Общий доход*: +{stats['total_income']:.2f}\n"
+        f"*Общий расход*: -{stats['total_expense']:.2f}\n"
+        f"*Баланс*: {stats['balance']:.2f}\n\n"
+        "📈 *Доходы по категориям*:\n" + income_stats + "\n\n"
+        "📉 *Расходы по категориям*:\n" + expense_stats + "\n\n"
+        f"Всего операций: {stats['income_count'] + stats['expense_count']}"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('stat_'))
+def handle_stat_period(call):
+    user_id = call.from_user.id
+    period = call.data.split('_')[1]  # week, month, year, all
+    
+    stats = get_period_statistics(user_id, period)
+    message = format_statistics_message(stats)
+    
+    bot.edit_message_text(
+        chat_id=user_id,
+        message_id=call.message.message_id,
+        text=message,
+        parse_mode="Markdown"
+    )
 
 def create_main_keyboard():
     keyboard = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -218,35 +301,9 @@ def process_expense_amount_step(message, category):
         msg = bot.send_message(user_id, "❌ Ошибка! Введите число.")
         bot.register_next_step_handler(msg, lambda m: process_expense_amount_step(m, category))
 
-def show_statistics(user_id):
-    stats = get_statistics(user_id)
-    
-    expense_stats = "\n".join(
-        f"• {cat}: -{amount:.2f}" 
-        for cat, amount in stats['expense_stats'].items()
-    )
-
-    income_stats = "\n".join(
-        f"• {cat}: +{amount:.2f}" 
-        for cat, amount in stats['income_stats'].items()
-    )
-
-    stats_message = (
-        "📊 *Статистика*\n\n"
-        f"*Общий доход*: +{stats['total_income']:.2f}\n"
-        f"*Общий расход*: -{stats['total_expense']:.2f}\n"
-        f"*Баланс*: {stats['balance']:.2f}\n\n"
-        "📈 *Доходы по категориям*:\n" + income_stats + "\n\n"
-        "📉 *Расходы по категориям*:\n" + expense_stats + "\n\n"
-        f"Всего операций: {stats['income_count'] + stats['expense_count']}"
-    )
-    
-    bot.send_message(
-        user_id, 
-        stats_message, 
-        parse_mode="Markdown", 
-        reply_markup=create_main_keyboard()
-    )
+@bot.message_handler(func=lambda message: message.text == "Статистика")
+def handle_statistics(message):
+    show_statistics_period(message.from_user.id)
 
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -268,9 +325,6 @@ def handle_message(message):
             reply_markup=create_expense_categories_keyboard()
         )
         bot.register_next_step_handler(msg, process_expense_category_step)
-    
-    elif text == "Статистика":
-        show_statistics(user_id)
     
     elif text in EXPENSE_CATEGORIES or text in INCOME_CATEGORIES:
         bot.send_message(
